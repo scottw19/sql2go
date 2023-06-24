@@ -33,6 +33,7 @@ type strukt struct {
 	longestFieldName int // used for putting spaces after field names
 	longestTyp       int // used for putting spaces after field types for json tags
 }
+
 type field struct {
 	name string
 	typ  string
@@ -58,8 +59,7 @@ func sql2go(path, outfilePath string, includeJson bool) {
 			tname := line[20 : len(line)-2]
 			sname := snakeToCamelCase(tname)
 			// Remove pluralization for table names
-			// TODO: Handle tables that are singular but which end in "s" somehow?
-			// e.g. ncis
+			// TODO: Handle better, e.g. faxes will become "Faxe"
 			if sname[len(sname)-1] == 115 {
 				sname = sname[0 : len(sname)-1]
 			}
@@ -75,7 +75,7 @@ func sql2go(path, outfilePath string, includeJson bool) {
 			line = strings.TrimSpace(line)
 			lineParts := strings.Split(line, " ")
 			if len(lineParts) < 2 {
-				log.Fatal("wtf is this line", line)
+				log.Fatal("Unable to handle column line", line)
 			}
 			colName := lineParts[0]
 
