@@ -26,6 +26,19 @@ func main() {
 	sql2go(*inputPath, *outfilePath, *includeJson)
 }
 
+// meta struct
+type strukt struct {
+	name             string
+	fields           []field
+	longestFieldName int // used for putting spaces after field names
+	longestTyp       int // used for putting spaces after field types for json tags
+}
+type field struct {
+	name string
+	typ  string
+	jtag string
+}
+
 func sql2go(path, outfilePath string, includeJson bool) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -35,12 +48,12 @@ func sql2go(path, outfilePath string, includeJson bool) {
 	scanner := bufio.NewScanner(file)
 	var builder strings.Builder
 	var line string
-	var inStruct bool
+	var s *strukt
 	for scanner.Scan() {
 		line = scanner.Text()
 		// lines containing CREATE TABLE are the start of a new struct
 		if strings.Contains(line, "CREATE TABLE") {
-			inStruct = true
+			s = &strukt{}
 			// CREATE TABLE public.access_tokens (
 			tname := line[20 : len(line)-2]
 			sname := snakeToCamelCase(tname)
@@ -50,15 +63,15 @@ func sql2go(path, outfilePath string, includeJson bool) {
 			if sname[len(sname)-1] == 115 {
 				sname = sname[0 : len(sname)-1]
 			}
-			builder.WriteString("type " + sname + " struct {\n")
+			s.name = sname
 			continue
 		}
-		if inStruct && line == ");" {
-			builder.WriteByte('}')
-			builder.WriteString("\n\n")
-			inStruct = false
+		if s != nil && line == ");" {
+			writeStrukt(&builder, *s)
+			s = nil
+			continue
 		}
-		if inStruct {
+		if s != nil {
 			line = strings.TrimSpace(line)
 			lineParts := strings.Split(line, " ")
 			if len(lineParts) < 2 {
@@ -72,6 +85,14 @@ func sql2go(path, outfilePath string, includeJson bool) {
 				continue
 			}
 
+			// new field
+			f := field{
+				name: snakeToCamelCase(colName),
+			}
+			if s.longestFieldName < len(f.name) {
+				s.longestFieldName = len(f.name)
+			}
+
 			colType := lineParts[1]
 
 			// remove trailing commas on field types if present
@@ -79,53 +100,53 @@ func sql2go(path, outfilePath string, includeJson bool) {
 				colType = colType[0 : len(colType)-1]
 			}
 
-			fName := snakeToCamelCase(colName)
-			builder.WriteString("  " + fName + " ") // indent
-
 			switch colType {
 			case "bigint":
-				builder.WriteString("int64")
+				f.typ = "int64"
 			case "integer":
-				builder.WriteString("int")
+				f.typ = "int"
 			case "smallint":
-				builder.WriteString("int16")
+				f.typ = "int16"
 			case "text[]":
-				builder.WriteString("[]string")
+				f.typ = "[]string"
 			case "jsonb":
-				builder.WriteString("json.RawMessage")
+				f.typ = "json.RawMessage"
 			case "boolean":
-				builder.WriteString("bool")
+				f.typ = "bool"
 			case "bytea":
-				builder.WriteString("[]byte")
+				f.typ = "[]byte"
 
 				// various types just dumping to string for now
 			case "text", "date", "uuid", "interval", "\"char\"", "inet":
-				builder.WriteString("string")
+				f.typ = "string"
 			default:
 				if strings.Index(colType, "public.") == 0 {
 					// any self-made types can just be dumped to string for now
-					builder.WriteString("string")
+					f.typ = "string"
 					break
 				}
 				if strings.Index(colType, "numeric") == 0 {
-					builder.WriteString("float32")
+					f.typ = "float32"
 					break
 				}
 				if strings.Index(colType, "timestamp") == 0 {
 					// dump timestamps to string for now
-					builder.WriteString("string")
+					f.typ = "string"
 					break
 				}
 				if strings.Index(colType, "character") == 0 {
-					builder.WriteString("string")
+					f.typ = "string"
 					break
 				}
 				log.Fatal("unhandled colType:", colType)
 			}
 			if includeJson {
-				builder.WriteString(" `json:\"" + colName + "\"`")
+				if s.longestTyp < len(f.typ) {
+					s.longestTyp = len(f.typ)
+				}
+				f.jtag = colName
 			}
-			builder.WriteByte('\n')
+			s.fields = append(s.fields, f)
 		}
 	}
 
@@ -158,4 +179,29 @@ func snakeToCamelCase(tname string) string {
 		retval = append(retval, b)
 	}
 	return string(retval)
+}
+
+func writeStrukt(b *strings.Builder, s strukt) error {
+	// declaration
+	b.WriteString("type " + s.name + " struct {\n")
+
+	// fields
+	for _, f := range s.fields {
+		b.WriteString("  " + f.name)
+		for i := len(f.name); i < s.longestFieldName; i++ {
+			b.WriteByte(' ')
+		}
+		b.WriteString(" " + f.typ)
+		if f.jtag != "" {
+			for i := len(f.typ); i < s.longestTyp; i++ {
+				b.WriteByte(' ')
+			}
+			b.WriteString(" `json:\"" + f.jtag + "\"`")
+		}
+		b.WriteByte('\n')
+	}
+
+	// end
+	b.WriteString("}\n\n")
+	return nil
 }
